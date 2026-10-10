@@ -1,9 +1,10 @@
-# UMOK Helper: Windows x64 build only (no code signing, no secrets).
-# Trimmed down from flutter-build.yml (job build-for-windows-flutter) + bridge.yml.
+# UMOK Helper: Windows x64 + macOS (arm64, x64) builds. No Apple signing/notarization,
+# no secrets: Windows exe is unsigned, macOS app is ad-hoc signed (codesign -s -).
+# Trimmed down from flutter-build.yml (build-for-windows-flutter, build-for-macOS) + bridge.yml.
 #
-# - Push to branch `umok` or manual run: builds and uploads the exe as a workflow artifact.
-# - Push of a tag `umok-v*`: also publishes a GitHub Release with the exe.
-name: UMOK Helper - Windows build
+# - Push to branch `umok` or manual run: builds and uploads files as workflow artifacts.
+# - Push of a tag `umok-v*`: also publishes a GitHub Release with all files.
+name: UMOK Helper - build
 
 on:
   workflow_dispatch:
@@ -26,6 +27,7 @@ env:
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
   # Keep in sync with flutter-build.yml when merging upstream.
   VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
+  MAC_RUST_VERSION: "1.81"
   APP_EXE: "UMOK-Helper"
 
 jobs:
@@ -245,21 +247,216 @@ jobs:
           name: umok-helper-windows-x64
           path: ./SignOutput
 
+  build-macos:
+    name: build-macos-${{ matrix.job.dmg-arch }}
+    needs: [generate-bridge]
+    runs-on: ${{ matrix.job.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - {
+              target: aarch64-apple-darwin,
+              os: macos-14,
+              extra-build-args: "--screencapturekit",
+              dmg-arch: arm64,
+            }
+          - {
+              target: x86_64-apple-darwin,
+              os: macos-15-intel,
+              extra-build-args: "",
+              dmg-arch: x64,
+            }
+    steps:
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Checkout source code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive
+
+      - name: Install build runtime
+        run: |
+          brew install llvm create-dmg
+          if command -v pkg-config &>/dev/null; then
+              echo "pkg-config is already installed"
+          else
+              brew install pkg-config
+          fi
+
+      - name: Install NASM
+        run: |
+          # NASM 2.16.x (NASM 3.x from brew is incompatible with aom and friends).
+          wget https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/macosx/nasm-2.16.03-macosx.zip
+          unzip nasm-2.16.03-macosx.zip
+          sudo cp nasm-2.16.03/nasm /usr/local/bin/nasm
+          nasm --version
+
+      - name: Install flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Patch flutter
+        run: |
+          cd $(dirname $(dirname $(which flutter)))
+          git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff
+
+      - name: Workaround for flutter issue
+        shell: bash
+        run: |
+          cd "$(dirname "$(which flutter)")"
+          # https://github.com/flutter/flutter/issues/133533
+          sed -i -e 's/_setFramesEnabledState(false);/\/\/_setFramesEnabledState(false);/g' ../packages/flutter/lib/src/scheduler/binding.dart
+          grep -n '_setFramesEnabledState(false);' ../packages/flutter/lib/src/scheduler/binding.dart
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.MAC_RUST_VERSION }}
+          targets: ${{ matrix.job.target }}
+          components: "rustfmt"
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          prefix-key: ${{ matrix.job.os }}
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bridge-artifact
+          path: ./
+
+      - name: Setup vcpkg with Github Actions binary cache
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies
+        run: |
+          if ! $VCPKG_ROOT/vcpkg \
+            install \
+            --x-install-root="$VCPKG_ROOT/installed"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
+              echo "$_1:"
+              echo "======"
+              cat "$_1"
+              echo "======"
+              echo ""
+            done
+            exit 1
+          fi
+
+      - name: Build rustdesk
+        run: |
+          if [ "${{ matrix.job.target }}" = "aarch64-apple-darwin" ]; then
+            MIN_MACOS_VERSION="12.3"
+            sed -i -e "s/MACOSX_DEPLOYMENT_TARGET\=[0-9]*.[0-9]*/MACOSX_DEPLOYMENT_TARGET=${MIN_MACOS_VERSION}/" build.py
+            sed -i -e "s/platform :osx, '.*'/platform :osx, '${MIN_MACOS_VERSION}'/" flutter/macos/Podfile
+            sed -i -e "s/osx_minimum_system_version = \"[0-9]*.[0-9]*\"/osx_minimum_system_version = \"${MIN_MACOS_VERSION}\"/" Cargo.toml
+            sed -i -e "s/MACOSX_DEPLOYMENT_TARGET = [0-9]*.[0-9]*;/MACOSX_DEPLOYMENT_TARGET = ${MIN_MACOS_VERSION};/" flutter/macos/Runner.xcodeproj/project.pbxproj
+          fi
+          ./build.py --flutter --hwcodec --unix-file-copy-paste ${{ matrix.job.extra-build-args }}
+          ls -la ./flutter/build/macos/Build/Products/Release/
+
+      - name: Ad-hoc codesign
+        # No Apple Developer account: sign inside-out with the ad-hoc identity "-" (no hardened
+        # runtime, it would reject loading ad-hoc signed frameworks). Needed so the app runs on
+        # Apple Silicon at all; Gatekeeper still asks the user to confirm the first launch.
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="./flutter/build/macos/Build/Products/Release/${{ env.APP_EXE }}.app"
+          test -x "$app/Contents/MacOS/${{ env.APP_EXE }}"
+          test -x "$app/Contents/MacOS/service"
+          if [[ -d "$app/Contents/Frameworks" ]]; then
+            while IFS= read -r -d '' code; do
+              if file -b "$code" | grep -q 'Mach-O'; then codesign --force --sign - "$code"; fi
+            done < <(find "$app/Contents/Frameworks" -type f -print0)
+            while IFS= read -r -d '' fw; do
+              codesign --force --sign - "$fw"
+            done < <(find "$app/Contents/Frameworks" -depth -type d -name '*.framework' -print0)
+          fi
+          codesign --force --sign - "$app/Contents/MacOS/service"
+          codesign --force --sign - --entitlements ./flutter/macos/Runner/Release.entitlements "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dv "$app"
+          plutil -p "$app/Contents/Info.plist" | grep -E "CFBundle(Name|DisplayName|Identifier|Executable|ShortVersionString)"
+
+      - name: Check built-in server and key
+        shell: bash
+        run: |
+          app="./flutter/build/macos/Build/Products/Release/${{ env.APP_EXE }}.app"
+          grep -rlaF "livekit.umokschool.ru" "$app/Contents"
+          grep -rlaF "aicTxDI3WmULCS0j4+bpt1ixak2s0t1pPPJxbGXxm5Y=" "$app/Contents"
+
+      - name: Create dmg
+        run: |
+          CREATE_DMG="$(command -v create-dmg)"
+          CREATE_DMG="$(readlink -f "$CREATE_DMG")"
+          sed -i -e 's/MAXIMUM_UNMOUNTING_ATTEMPTS=3/MAXIMUM_UNMOUNTING_ATTEMPTS=7/' "$CREATE_DMG"
+          mkdir -p ./MacOutput
+          create-dmg --volname "UMOK Helper" --icon "${{ env.APP_EXE }}.app" 200 190 --hide-extension "${{ env.APP_EXE }}.app" \
+            --window-size 800 400 --app-drop-link 600 185 \
+            ./MacOutput/${{ env.APP_EXE }}-mac-${{ matrix.job.dmg-arch }}.dmg \
+            ./flutter/build/macos/Build/Products/Release/${{ env.APP_EXE }}.app
+          cd MacOutput && shasum -a 256 *.dmg
+
+      - name: Upload dmg
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: umok-helper-mac-${{ matrix.job.dmg-arch }}
+          path: ./MacOutput/*.dmg
+
+  release:
+    needs: [build-windows-x64, build-macos]
+    # Publish even if the optional Intel mac build failed; Windows and Apple Silicon are required.
+    if: ${{ always() && startsWith(github.ref, 'refs/tags/umok-v') && needs.build-windows-x64.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build files
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: umok-helper-*
+          path: ./dl
+          merge-multiple: true
+
+      - name: Collect release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cp dl/${{ env.APP_EXE }}-install.exe dl/${{ env.APP_EXE }}.exe out/
+          cp dl/${{ env.APP_EXE }}-mac-arm64.dmg out/
+          if [ -f dl/${{ env.APP_EXE }}-mac-x64.dmg ]; then cp dl/${{ env.APP_EXE }}-mac-x64.dmg out/; else echo "::warning::Intel mac dmg is missing"; fi
+          cd out && sha256sum * | tee SHA256SUMS.txt
+
       - name: Publish Release
-        if: startsWith(github.ref, 'refs/tags/umok-v')
         uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
         with:
           tag_name: ${{ github.ref_name }}
           name: "УМОК Помощник ${{ github.ref_name }}"
           body: |
-            УМОК Помощник для Windows (x64) - сборка RustDesk для учеников онлайн-школы УМОК.
+            УМОК Помощник - сборка RustDesk для учеников онлайн-школы УМОК.
 
+            Windows (x64):
             - `UMOK-Helper-install.exe` - установщик (рекомендуется).
             - `UMOK-Helper.exe` - запуск без установки.
 
+            macOS:
+            - `UMOK-Helper-mac-arm64.dmg` - Apple Silicon (M1 и новее).
+            - `UMOK-Helper-mac-x64.dmg` - Intel.
+
             Сервер и ключ встроены, входящие подключения только с подтверждением кликом.
             Исходный код (AGPL-3.0): https://github.com/ef1m03/umok-helper
-            Сборка без цифровой подписи: Windows SmartScreen может показать предупреждение.
+            Сборки без цифровой подписи (macOS - ad-hoc подпись без нотаризации):
+            Windows SmartScreen и macOS Gatekeeper покажут предупреждение при первом запуске.
           files: |
-            ./SignOutput/*.exe
-            ./SignOutput/SHA256SUMS.txt
+            ./out/*

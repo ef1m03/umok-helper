@@ -291,6 +291,8 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   }
 
   buildPasswordBoard2(BuildContext context, ServerModel model) {
+    // UMOK Helper: incoming sessions are approved by click only, no password to show.
+    if (model.approveMode == 'click') return const SizedBox.shrink();
     RxBool refreshHover = false.obs;
     RxBool editHover = false.obs;
     final textColor = Theme.of(context).textTheme.titleLarge?.color;

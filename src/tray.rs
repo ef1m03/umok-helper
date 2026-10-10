@@ -303,8 +303,12 @@ fn load_icon_from_asset() -> Option<image::DynamicImage> {
     else {
         return None;
     };
+    // UMOK Helper: the macOS tray is a template image, use res/mac-tray-dark-x2.png (owl silhouette).
     #[cfg(target_os = "macos")]
-    let path = path.join("../Frameworks/App.framework/Resources/flutter_assets/assets/icon.png");
+    {
+        let _ = path;
+        return None;
+    }
     #[cfg(windows)]
     let path = path.join(r"data\flutter_assets\assets\icon.png");
     #[cfg(target_os = "linux")]

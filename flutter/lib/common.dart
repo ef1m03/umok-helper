@@ -3022,7 +3022,8 @@ int versionCmp(String v1, String v2) {
 
 String getWindowName({WindowType? overrideType}) {
   // UMOK Helper: human readable title, must match get_rustdesk_app_name() in src/flutter.rs.
-  final name = isWindows ? 'УМОК Помощник' : bind.mainGetAppNameSync();
+  final name =
+      (isWindows || isMacOS) ? 'УМОК Помощник' : bind.mainGetAppNameSync();
   switch (overrideType ?? kWindowType) {
     case WindowType.Main:
       return name;
