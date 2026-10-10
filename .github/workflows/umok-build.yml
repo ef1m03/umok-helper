@@ -390,13 +390,6 @@ jobs:
           codesign -dv "$app"
           plutil -p "$app/Contents/Info.plist" | grep -E "CFBundle(Name|DisplayName|Identifier|Executable|ShortVersionString)"
 
-      - name: Check built-in server and key
-        shell: bash
-        run: |
-          app="./flutter/build/macos/Build/Products/Release/${{ env.APP_EXE }}.app"
-          grep -rlaF "livekit.umokschool.ru" "$app/Contents"
-          grep -rlaF "aicTxDI3WmULCS0j4+bpt1ixak2s0t1pPPJxbGXxm5Y=" "$app/Contents"
-
       - name: Create dmg
         run: |
           CREATE_DMG="$(command -v create-dmg)"
@@ -414,6 +407,17 @@ jobs:
         with:
           name: umok-helper-mac-${{ matrix.job.dmg-arch }}
           path: ./MacOutput/*.dmg
+
+      - name: Check built-in server and key
+        shell: bash
+        run: |
+          app="./flutter/build/macos/Build/Products/Release/${{ env.APP_EXE }}.app"
+          find "$app/Contents" -type f -size +1M -exec ls -la {} \;
+          for f in $(find "$app/Contents" -type f -name "*rustdesk*"); do
+            echo "== $f"; file "$f"; strings -a -n 10 "$f" | grep -iE "umok|livekit|rs-ny.rustdesk|OeVuKk5n" | head -20 || true
+          done
+          grep -rlaF "livekit.umokschool.ru" "$app/Contents"
+          grep -rlaF "aicTxDI3WmULCS0j4+bpt1ixak2s0t1pPPJxbGXxm5Y=" "$app/Contents"
 
   release:
     needs: [build-windows-x64, build-macos]
