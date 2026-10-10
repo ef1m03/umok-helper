@@ -1,13 +1,15 @@
 # UMOK Helper: Windows x64 build only (no code signing, no secrets).
 # Trimmed down from flutter-build.yml (job build-for-windows-flutter) + bridge.yml.
 #
-# - Manual run (workflow_dispatch): builds and uploads the exe as a workflow artifact.
+# - Push to branch `umok` or manual run: builds and uploads the exe as a workflow artifact.
 # - Push of a tag `umok-v*`: also publishes a GitHub Release with the exe.
 name: UMOK Helper - Windows build
 
 on:
   workflow_dispatch:
   push:
+    branches:
+      - umok
     tags:
       - "umok-v*"
 
