@@ -60,6 +60,11 @@ const BUILTIN_SETTINGS: &[(&str, &str)] = &[
 
 const HARD_SETTINGS: &[(&str, &str)] = &[("disable-account", "Y"), ("disable-ab", "Y")];
 
+/// Kept intact in the binary (no immediate-store inlining) so a release can be checked with
+/// `strings`/`grep` for the built-in server and key.
+#[used]
+static UMOK_BUILD_INFO: [&str; 4] = [APP_NAME, DISPLAY_NAME, RENDEZVOUS_SERVER, RS_PUB_KEY];
+
 fn put(map: &std::sync::RwLock<std::collections::HashMap<String, String>>, kv: &[(&str, &str)]) {
     let mut map = map.write().unwrap();
     for (k, v) in kv {
