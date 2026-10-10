@@ -452,15 +452,17 @@ jobs:
           path: ./MacOutput/*.dmg
 
       - name: Check built-in server and key
+        # BSD grep on the macos-14 runner misses matches in large binaries, so check with Python.
         shell: bash
         run: |
-          app="./flutter/build/macos/Build/Products/Release/${{ env.APP_EXE }}.app"
-          find "$app/Contents" -type f -size +1M -exec ls -la {} \;
-          for f in $(find "$app/Contents" -type f -name "*rustdesk*"); do
-            echo "== $f"; file "$f"; strings -a -n 10 "$f" | grep -iE "umok|livekit|rs-ny.rustdesk|OeVuKk5n" | head -20 || true
-          done
-          grep -rlaF "livekit.umokschool.ru" "$app/Contents"
-          grep -rlaF "aicTxDI3WmULCS0j4+bpt1ixak2s0t1pPPJxbGXxm5Y=" "$app/Contents"
+          python3 - "./flutter/build/macos/Build/Products/Release/${{ env.APP_EXE }}.app/Contents/Frameworks/liblibrustdesk.dylib" <<'PY'
+          import sys
+          data = open(sys.argv[1], "rb").read()
+          missing = [s for s in ("livekit.umokschool.ru", "aicTxDI3WmULCS0j4+bpt1ixak2s0t1pPPJxbGXxm5Y=")
+                     if s.encode() not in data]
+          print("missing:", missing) if missing else print("server and key found in", sys.argv[1])
+          sys.exit(1 if missing else 0)
+          PY
 
   release:
     needs: [build-windows-x64, smoke-windows, build-macos]
