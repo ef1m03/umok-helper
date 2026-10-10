@@ -247,6 +247,49 @@ jobs:
           name: umok-helper-windows-x64
           path: ./SignOutput
 
+  smoke-windows:
+    # Launches the built app (unpacked, portable, install page, silent install + service)
+    # on a clean Windows VM; the official RustDesk exe is run the same way as a control.
+    needs: [build-windows-x64]
+    runs-on: windows-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Download unpacked build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: umok-helper-windows-x64-unpacked
+          path: ./unpacked
+
+      - name: Download exe
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: umok-helper-windows-x64
+          path: ./packed
+
+      - name: Download control exe (official RustDesk release)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $rel = Invoke-RestMethod https://api.github.com/repos/rustdesk/rustdesk/releases/latest -Headers @{ Authorization = "Bearer $env:GH_TOKEN" }
+          $asset = $rel.assets | Where-Object { $_.name -match '^rustdesk-[0-9.]+-x86_64\.exe$' } | Select-Object -First 1
+          New-Item -ItemType Directory -Force -Path control | Out-Null
+          Invoke-WebRequest $asset.browser_download_url -OutFile control\rustdesk-control.exe
+          Write-Host "control: $($asset.name)"
+
+      - name: Smoke test
+        run: |
+          .\.github\scripts\umok-smoke-windows.ps1 -Unpacked "$PWD\unpacked" -Packed "$PWD\packed" -Out "$PWD\smoke" -ControlExe "$PWD\control\rustdesk-control.exe"
+
+      - name: Upload smoke test results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: smoke-windows-results
+          path: ./smoke
+
   build-macos:
     name: build-macos-${{ matrix.job.dmg-arch }}
     needs: [generate-bridge]
@@ -420,15 +463,22 @@ jobs:
           grep -rlaF "aicTxDI3WmULCS0j4+bpt1ixak2s0t1pPPJxbGXxm5Y=" "$app/Contents"
 
   release:
-    needs: [build-windows-x64, build-macos]
-    # Publish even if the optional Intel mac build failed; Windows and Apple Silicon are required.
-    if: ${{ always() && startsWith(github.ref, 'refs/tags/umok-v') && needs.build-windows-x64.result == 'success' }}
+    needs: [build-windows-x64, smoke-windows, build-macos]
+    # Publish even if the optional Intel mac build failed; Windows (incl. smoke test) and
+    # Apple Silicon are required.
+    if: ${{ always() && startsWith(github.ref, 'refs/tags/umok-v') && needs.build-windows-x64.result == 'success' && needs.smoke-windows.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Download build files
+      - name: Download Windows files
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: umok-helper-*
+          name: umok-helper-windows-x64
+          path: ./dl
+
+      - name: Download macOS files
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: umok-helper-mac-*
           path: ./dl
           merge-multiple: true
 
